@@ -471,19 +471,97 @@
   // CAJA
   function loadCaja(){
     var host=sec("caja"); host.innerHTML='<div class="loading">Cargando…</div>';
-    base("caja").then(function(res){
-      if(state.section!=="caja") return;
-      var rows=res.data||[]; var orden={Efectivo:0,Nequi:1,Transferencia:2,Daviplata:3};
+    var fecha=state.fecha;
+    Promise.all([
+      base("caja"),
+      base("cierre_caja").eq("fecha", fecha).maybeSingle()
+    ]).then(function(r){
+      if(state.section!=="caja" || state.fecha!==fecha) return;
+      var rows=r[0].data||[], c=(r[1] && !r[1].error) ? r[1].data : null;
+      var orden={Efectivo:0,Nequi:1,Transferencia:2,Daviplata:3};
       rows.sort(function(a,b){ return (orden[a.caja]==null?9:orden[a.caja])-(orden[b.caja]==null?9:orden[b.caja]); });
-      var total=rows.reduce(function(s,r){ return s+Number(r.saldo||0); },0);
+      var total=rows.reduce(function(s,x){ return s+Number(x.saldo||0); },0);
       var icon={Efectivo:"💵",Nequi:"📱",Transferencia:"🏦",Daviplata:"📲"};
-      var h='<div class="sechead"><h2 class="sec">Resumen de caja</h2><button class="xls" data-xls="caja">⬇️ Excel</button></div>';
-      if(!rows.length){ h+='<div class="empty">No hay cajas sincronizadas todavía.</div>'; host.innerHTML=h; return; }
-      h+='<div class="tiles">';
-      rows.forEach(function(r){ h+='<div class="tile"><div class="lab">'+(icon[r.caja]||"💼")+' '+esc(r.caja)+'</div><div class="val num">'+money(r.saldo)+'</div></div>'; });
-      h+='</div><div class="card"><div class="total-row"><span>Total en cajas</span><span class="big num">'+money(total)+'</span></div></div>';
-      host.innerHTML=h; state.cache.caja=rows;
+
+      var h='<div class="sechead"><h2 class="sec">Cierre de caja del día</h2><button class="xls" data-xls="caja">⬇️ Excel</button></div>';
+      h+=cierreHtml(c);
+
+      h+='<div class="sechead" style="margin-top:22px"><h2 class="sec">Saldos actuales por caja</h2></div>';
+      if(!rows.length){ h+='<div class="empty">No hay cajas sincronizadas todavía.</div>'; }
+      else {
+        h+='<div class="tiles">';
+        rows.forEach(function(x){ h+='<div class="tile"><div class="lab">'+(icon[x.caja]||"💼")+' '+esc(x.caja)+'</div><div class="val num">'+money(x.saldo)+'</div></div>'; });
+        h+='</div><div class="card"><div class="total-row"><span>Total en cajas</span><span class="big num">'+money(total)+'</span></div></div>';
+      }
+      host.innerHTML=h; state.cache.caja=rows; state.cache.cierre=c;
     });
+  }
+
+  // Cierre del día: lo contado (efectivo / Nequis / bancos), gastos y pagos con su detalle, y el cuadre.
+  function cierreHtml(c){
+    var items=(c && Array.isArray(c.items)) ? c.items : [];
+    function de(t){ return items.filter(function(i){ return i.tipo===t; }); }
+    var nequis=de("nequi"), gastos=de("gasto"), pagos=de("pago");
+    var registrados=items.filter(function(i){ return i.tipo==="gasto_registrado" || i.tipo==="pago_registrado"; });
+    var h="";
+
+    if(!c || !c.hecho){
+      h+='<div class="card"><div class="row"><div class="main"><div class="name">Todavía no se ha hecho el cierre de este día</div>'
+        +'<div class="meta">Cuando lo hagan en el computador, aquí sale lo contado, los Nequis y los gastos.</div></div>'
+        +'<span class="pill warn">Sin cierre</span></div></div>';
+    } else {
+      var dif=Number(c.diferencia||0);
+      var cuadre = dif===0 ? '<span class="pill good">✔ Cuadra</span>'
+                 : dif>0 ? '<span class="pill info">Sobra '+money(dif)+'</span>'
+                 : '<span class="pill bad">Falta '+money(-dif)+'</span>';
+      var estado = c.borrador ? '<span class="pill warn">Avance (sin cerrar)</span>' : '<span class="pill good">Cerrado</span>';
+      h+='<div style="display:flex; gap:6px; flex-wrap:wrap; margin:0 2px 10px">'+estado+cuadre+'</div>';
+
+      h+='<div class="tiles">'
+        +'<div class="tile accent span"><div class="lab">💵 Efectivo contado</div><div class="val num">'+money(c.efectivo)+'</div></div>'
+        +'<div class="tile"><div class="lab">📱 Nequi'+(nequis.length?' · '+nequis.length:'')+'</div><div class="val num">'+money(c.nequi)+'</div></div>'
+        +'<div class="tile"><div class="lab">🧾 Gastos'+(gastos.length?' · '+gastos.length:'')+'</div><div class="val num">'+money(c.gastos)+'</div></div>';
+      if(Number(c.pagos)) h+='<div class="tile"><div class="lab">🤝 Pagos'+(pagos.length?' · '+pagos.length:'')+'</div><div class="val num">'+money(c.pagos)+'</div></div>';
+      if(Number(c.transferencia)) h+='<div class="tile"><div class="lab">🏦 Transferencia</div><div class="val num">'+money(c.transferencia)+'</div></div>';
+      if(Number(c.daviplata)) h+='<div class="tile"><div class="lab">📲 Daviplata</div><div class="val num">'+money(c.daviplata)+'</div></div>';
+      h+='</div>';
+
+      h+=listaItems("📱 Nequis recibidos", nequis, c.nequi);
+      h+=listaItems("🧾 Gastos del día", gastos, c.gastos);
+      h+=listaItems("🤝 Pagos del día", pagos, c.pagos);
+
+      var esperado=Number(c.venta_contado||0)+Number(c.abonos||0);
+      h+='<div class="card">'
+        +filaCuadre("Venta de contado", c.venta_contado)
+        +filaCuadre("Abonos", c.abonos)
+        +filaCuadre("Base que venía de ayer", c.base_ayer)
+        +filaCuadre("Base que queda para mañana", c.base_manana)
+        +'<div class="total-row"><span>Debía haber (venta + abonos)</span><span class="big num">'+money(esperado)+'</span></div></div>';
+      if(c.nota) h+='<div class="card"><div class="row"><div class="main"><div class="meta">📝 Nota</div><div class="name" style="white-space:normal">'+esc(c.nota)+'</div></div></div></div>';
+    }
+
+    if(registrados.length){
+      var tot=registrados.reduce(function(s,i){ return s+Number(i.monto||0); },0);
+      h+='<div class="card"><div class="row"><div class="main"><div class="name">📒 Salidas registradas en caja</div>'
+        +'<div class="meta">Gastos y pagos a proveedor anotados en el sistema este día</div></div><div class="amt num">'+money(tot)+'</div></div>';
+      registrados.forEach(function(i){
+        var tipo = i.tipo==="pago_registrado" ? "Pago proveedor" : "Gasto";
+        h+='<div class="row"><div class="main"><div class="name">'+esc(i.detalle||tipo)+'</div><div class="meta">'+tipo+(i.caja?' · '+esc(i.caja):'')+'</div></div><div class="amt num">'+money(i.monto)+'</div></div>';
+      });
+      h+='</div>';
+    }
+    return h;
+  }
+  function listaItems(titulo, lista, total){
+    if(!lista.length) return "";
+    var h='<div class="card"><div class="row"><div class="main"><div class="name">'+titulo+' ('+lista.length+')</div></div><div class="amt num">'+money(total)+'</div></div>';
+    lista.forEach(function(i){
+      h+='<div class="row"><div class="main"><div class="name">'+(i.detalle?esc(i.detalle):'<span style="color:var(--muted)">Sin detalle</span>')+'</div></div><div class="amt num">'+money(i.monto)+'</div></div>';
+    });
+    return h+'</div>';
+  }
+  function filaCuadre(lab, val){
+    return '<div class="row"><div class="main"><div class="name">'+lab+'</div></div><div class="amt num">'+money(val)+'</div></div>';
   }
 
   // CARTERA
@@ -634,7 +712,16 @@
     if(k==="resumen"){ var d=(state.cache.resumen||{}).d; nombre="resumen_"+state.fecha;
       rows=[["Concepto","Valor"]];
       if(d){ rows.push(["Contado",d.contado],["Fiado",d.credito],["Abonos",d.abonos],["Recaudado",d.recaudado],["Kilos",d.kilos]); }
-    } else if(k==="caja"){ nombre="caja"; rows=[["Caja","Saldo"]].concat((state.cache.caja||[]).map(function(r){return [r.caja,r.saldo];})); }
+    } else if(k==="caja"){ nombre="caja_"+state.fecha; var cc2=state.cache.cierre;
+      rows=[["Concepto","Detalle","Valor"]];
+      if(cc2 && cc2.hecho){
+        rows.push(["Efectivo contado","",cc2.efectivo],["Nequi","",cc2.nequi],["Transferencia","",cc2.transferencia],["Daviplata","",cc2.daviplata],
+                  ["Gastos","",cc2.gastos],["Pagos","",cc2.pagos],["Venta de contado","",cc2.venta_contado],["Abonos","",cc2.abonos],
+                  ["Base de ayer","",cc2.base_ayer],["Base para mañana","",cc2.base_manana],["Diferencia","",cc2.diferencia]);
+      }
+      var nom={nequi:"Nequi",gasto:"Gasto",pago:"Pago",gasto_registrado:"Gasto registrado",pago_registrado:"Pago proveedor registrado"};
+      ((cc2&&cc2.items)||[]).forEach(function(i){ rows.push([nom[i.tipo]||i.tipo, i.detalle||"", i.monto]); });
+      (state.cache.caja||[]).forEach(function(r){ rows.push(["Saldo actual "+r.caja,"",r.saldo]); }); }
     else if(k==="cartera"){ nombre="cartera"; rows=[["Cliente","Saldo","Días sin abono"]].concat((state.cache.cartera||[]).map(function(r){return [r.nombre,r.saldo,r.dias_sin_abono];})); }
     else if(k==="cliente"){ var cc=state.cache.cliente; if(cc){ nombre="estado_"+cc.c.nombre; var s=0; rows=[["Fecha","Detalle","Cargo","Abono","Saldo"]].concat(cc.movs.map(function(m){ s+=Number(m.cargo)-Number(m.abono); return [String(m.fecha).slice(0,10), m.detalle||m.tipo, m.cargo, m.abono, s]; })); } }
     else if(k==="inventario"){ nombre="inventario"; rows=[["Producto","Kilos","Valor costo"]].concat((state.cache.inv||[]).map(function(r){return [r.nombre,r.kilos,r.valor_costo];})); }
