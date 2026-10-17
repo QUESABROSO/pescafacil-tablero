@@ -157,6 +157,9 @@
     background:var(--ocean-deep); color:#fff; padding:11px 16px; border-radius:12px; font-size:.82rem; font-weight:600;
     box-shadow:var(--shadow); z-index:50; max-width:90%; text-align:center; opacity:0; transition:opacity .2s, transform .2s; pointer-events:none}
   #toast.show{opacity:1; transform:translateX(-50%) translateY(-2px)}
+  .linkbtn{display:block; margin:14px auto 0; background:none; border:none; color:var(--ocean);
+    font-family:inherit; font-weight:700; font-size:.82rem; cursor:pointer; text-decoration:underline}
+  .lok{color:var(--good); font-size:.82rem; font-weight:600; margin:0 0 12px; min-height:1px}
 </style>
 </head>
 <body>
@@ -179,7 +182,26 @@
       <input type="password" id="pass" name="password" autocomplete="current-password" placeholder="••••••••" required>
     </div>
     <button class="btn" id="loginBtn" type="submit">Entrar</button>
+    <button type="button" id="forgotBtn" class="linkbtn">¿Olvidaste tu contraseña?</button>
     <p class="lhint">Usa el correo y la contraseña que te dieron.<br>Solo verás la información de tu negocio.</p>
+  </form>
+</div>
+
+<!-- ===================== RECUPERAR / NUEVA CONTRASEÑA ===================== -->
+<div id="recovery" hidden>
+  <div class="brand">
+    <div class="logo">🔑</div>
+    <h1>Nueva contraseña</h1>
+    <p>Escribe tu nueva clave para entrar</p>
+  </div>
+  <form class="lcard" id="recoveryForm">
+    <p class="lerr" id="rerr"></p>
+    <p class="lok" id="rok"></p>
+    <div class="fld">
+      <label for="npass">Nueva contraseña</label>
+      <input type="password" id="npass" autocomplete="new-password" placeholder="mínimo 6 caracteres" required>
+    </div>
+    <button class="btn" id="recoveryBtn" type="submit">Guardar y entrar</button>
   </form>
 </div>
 
@@ -252,8 +274,11 @@
   function dayLabel(s){ try{ return parseISO(s).toLocaleDateString("es-CO",{weekday:"long",day:"numeric",month:"short",year:"numeric"}); }catch(e){ return s; } }
 
   // ----- Login -----
-  function showLogin(err){ el("login").hidden=false; el("app").hidden=true; el("lerr").textContent=err||""; }
-  function showApp(){ el("login").hidden=true; el("app").hidden=false; }
+  var booted=false, recoveryMode=false;
+  function hideAll(){ el("login").hidden=true; el("app").hidden=true; el("recovery").hidden=true; }
+  function showLogin(err){ hideAll(); el("login").hidden=false; el("lerr").textContent=err||""; }
+  function showApp(){ hideAll(); el("app").hidden=false; }
+  function showRecovery(){ hideAll(); recoveryMode=true; el("recovery").hidden=false; el("rerr").textContent=""; el("rok").textContent=""; }
 
   el("loginForm").addEventListener("submit", function(e){
     e.preventDefault();
@@ -275,8 +300,36 @@
     sb.auth.signOut().then(function(){ location.reload(); });
   });
 
+  // ----- ¿Olvidaste tu contraseña? (envía correo de recuperación) -----
+  el("forgotBtn").addEventListener("click", function(){
+    var email=el("email").value.trim();
+    if(!email){ el("lerr").textContent="Escribe tu correo arriba y vuelve a tocar el enlace."; return; }
+    el("lerr").textContent="";
+    var redir = location.origin + location.pathname;
+    sb.auth.resetPasswordForEmail(email, { redirectTo: redir }).then(function(res){
+      if(res.error){ el("lerr").textContent = traducir(res.error.message); return; }
+      say("📧 Te enviamos un correo para cambiar la clave. Ábrelo en este mismo celular (revisa también spam).");
+    });
+  });
+
+  // ----- Guardar la nueva contraseña (al volver del correo de recuperación) -----
+  el("recoveryForm").addEventListener("submit", function(e){
+    e.preventDefault();
+    var np=el("npass").value;
+    if(np.length<6){ el("rerr").textContent="La contraseña debe tener al menos 6 caracteres."; return; }
+    var btn=el("recoveryBtn"); btn.disabled=true; btn.textContent="Guardando…"; el("rerr").textContent="";
+    sb.auth.updateUser({ password: np }).then(function(res){
+      btn.disabled=false; btn.textContent="Guardar y entrar";
+      if(res.error){ el("rerr").textContent = traducir(res.error.message); return; }
+      recoveryMode=false;
+      el("rok").textContent="✅ Clave actualizada. Entrando…";
+      boot();
+    });
+  });
+
   // ----- Arranque: cargar negocios del usuario -----
   function boot(){
+    if(booted) return; booted=true;
     showApp();
     sb.from("perfiles").select("negocio_id, negocios(nombre)").then(function(res){
       if(res.error){ el("hsub").textContent="Error cargando el negocio"; return; }
@@ -292,8 +345,18 @@
     });
   }
 
+  // ----- Eventos de autenticación (recuperación de clave / enlace mágico) -----
+  sb.auth.onAuthStateChange(function(event, session){
+    if(event==="PASSWORD_RECOVERY"){ showRecovery(); return; }
+    if(event==="SIGNED_IN" && session && !recoveryMode && !booted){ boot(); }
+  });
+
   // ----- Sesión guardada (seguir logueado) -----
+  // Si venimos de un correo de recuperación (type=recovery en el enlace), NO entramos directo:
+  // esperamos el evento PASSWORD_RECOVERY para mostrar la pantalla de nueva contraseña.
+  var esRecuperacion = /type=recovery/.test(location.hash || "");
   sb.auth.getSession().then(function(res){
+    if(esRecuperacion){ return; }
     if(res.data && res.data.session){ boot(); } else { showLogin(); }
   });
 
