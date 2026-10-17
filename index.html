@@ -255,7 +255,10 @@
   "use strict";
   // ----- Config pública (seguro: protegido por RLS, cada quien ve solo lo suyo) -----
   var SUPABASE_URL = "https://phrsccoipcgjxlqlctjl.supabase.co";
-  var SUPABASE_KEY = "sb_publishable_YpotEpinEWsC2dI7FIKI";
+  // Llave anon pública (clásica, formato JWT). Es segura para el navegador: con RLS cada quien
+  // ve solo su negocio. Se usa esta en vez de la publishable nueva porque la API la rechazaba
+  // con "Invalid API key".
+  var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBocnNjY29pcGNnanhscWxjdGpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIyMDUyNjEsImV4cCI6MjEwNzc4MTI2MX0.KfNT_coWocg1GG6PaVP79kSYve-9rbI5l-_xs9DzSE4";
   var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
   // ----- Estado -----
