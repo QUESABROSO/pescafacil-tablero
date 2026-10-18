@@ -164,6 +164,14 @@
   /* campana de avisos de abonos */
   .out.bell{font-size:.9rem; padding:3px 8px}
   .out.bell.on{background:#ffd54a; color:#15242e; border-color:#ffd54a}
+  .avisos{position:fixed; z-index:40; top:calc(env(safe-area-inset-top,0px) + 58px); right:max(12px,env(safe-area-inset-right,0px));
+    width:min(320px, calc(100vw - 24px)); background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); padding:14px}
+  .av-head{display:flex; justify-content:space-between; align-items:center}
+  .av-x{appearance:none; border:none; background:none; color:var(--muted); font-size:1.1rem; cursor:pointer; padding:2px 6px}
+  .av-sub{font-size:.78rem; color:var(--muted); margin:6px 0 8px}
+  .av-op{display:flex; justify-content:space-between; align-items:center; padding:10px 2px; border-top:1px solid var(--line); font-weight:600; font-size:.9rem; cursor:pointer}
+  .av-op input{width:20px; height:20px; accent-color:var(--coral)}
+  .av-nota{font-size:.72rem; color:var(--muted); margin:10px 0 0; line-height:1.4}
   /* Transacciones / movimientos: tabla como la del programa, con colores por tipo */
   .tfil{display:flex; gap:6px; overflow-x:auto; margin:12px 0 8px; scrollbar-width:none}
   .tfil::-webkit-scrollbar{display:none}
@@ -280,6 +288,7 @@
     <section id="s-prestamos" hidden></section>
   </main>
 </div>
+<div id="avisos" class="avisos" hidden></div>
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.48.1/dist/umd/supabase.min.js"></script>
@@ -678,42 +687,92 @@
     });
   }
 
-  // ===== AVISOS DE ABONOS (🔔) =====
-  // Con la campana prendida, la página revisa cada 30 s si llegaron abonos nuevos (los manda el PC
-  // al sincronizar) y avisa con una notificación del celular + un mensaje en pantalla. Funciona
-  // mientras el tablero esté abierto (aunque sea en otra pestaña o la pantalla en segundo plano).
+  // ===== AVISOS (🔔) =====
+  // La campana abre un panel donde se escoge de qué avisar (abonos, ventas, gastos, préstamos,
+  // devoluciones, pagos de comisión). Con algo prendido, la página revisa cada 30 s la tabla
+  // "transacciones" (la manda el PC al sincronizar) y avisa con notificación del celular + mensaje.
+  // Funciona mientras el tablero esté abierto (aunque sea en otra pestaña o en segundo plano).
+  var TIPOS_AVISO=[["Abono","💰","Abonos"],["Venta","🧾","Ventas"],["Gasto","📤","Gastos"],["Préstamo","🤝","Préstamos"],
+                   ["Devolución","↩️","Devoluciones"],["Pago Comisión","💵","Pagos de comisión"]];
   // hora LOCAL "yyyy-MM-ddTHH:mm:ss" (el PC guarda "momento" en hora de Colombia, sin zona)
   function ahoraLocal(){ var d=new Date(); return iso(d)+"T"+pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds()); }
   function claveAvisos(){ return "pf_avisos_"+state.negocioId; }
-  function avisosOn(){ try{ return localStorage.getItem(claveAvisos())==="1"; }catch(e){ return false; } }
-  function pintarBell(){ var b=el("bell"); if(!b) return; var on=avisosOn(); b.textContent=on?"🔔":"🔕"; b.classList.toggle("on",on); b.title=on?"Avisos de abonos: prendidos":"Avisos de abonos: apagados"; }
-  el("bell").onclick=function(){
-    if(!state.negocioId) return;
-    var on=!avisosOn();
-    try{ localStorage.setItem(claveAvisos(), on?"1":"0"); if(on) localStorage.setItem(claveAvisos()+"_desde", ahoraLocal()); }catch(e){}
-    if(on && "Notification" in window && Notification.permission==="default") Notification.requestPermission();
-    pintarBell();
-    say(on ? "🔔 Te aviso cuando entre un abono" : "🔕 Avisos de abonos apagados");
-    if(on) revisarAbonos();
-  };
-  function revisarAbonos(){
-    if(!state.negocioId || !avisosOn()) return;
+  function tiposActivos(){
+    var v=null; try{ v=localStorage.getItem(claveAvisos()); }catch(e){}
+    if(v==="1") return ["Abono"];                 // versión anterior: solo abonos
+    try{ var a=JSON.parse(v||"[]"); return Array.isArray(a)?a:[]; }catch(e){ return []; }
+  }
+  function guardarTipos(lista){
+    try{ localStorage.setItem(claveAvisos(), JSON.stringify(lista)); localStorage.setItem(claveAvisos()+"_desde", ahoraLocal()); }catch(e){}
+  }
+  function pintarBell(){ var b=el("bell"); if(!b) return; var n=tiposActivos().length; b.textContent=n?"🔔":"🔕"; b.classList.toggle("on",n>0); b.title=n?"Avisos prendidos ("+n+")":"Avisos apagados"; }
+  function abrirAvisos(){
+    var p=el("avisos"); if(!p) return;
+    var act=tiposActivos();
+    var h='<div class="av-head"><b>🔔 Avisos</b><button type="button" class="av-x" id="avCerrar" aria-label="Cerrar">✕</button></div>'
+      +'<p class="av-sub">Te aviso en el celular cuando el computador registre:</p>';
+    TIPOS_AVISO.forEach(function(t){
+      h+='<label class="av-op"><span>'+t[1]+' '+t[2]+'</span><input type="checkbox" data-av="'+t[0]+'"'+(act.indexOf(t[0])>=0?' checked':'')+'></label>';
+    });
+    h+='<p class="av-nota">Avisa mientras tengas el tablero abierto (aunque esté en otra pestaña). Llega cuando el computador sincroniza, cada 3 minutos.</p>';
+    p.innerHTML=h; p.hidden=false;
+    Array.prototype.forEach.call(p.querySelectorAll("input[data-av]"), function(c){
+      c.onchange=function(){
+        var lista=[]; Array.prototype.forEach.call(p.querySelectorAll("input[data-av]"), function(x){ if(x.checked) lista.push(x.dataset.av); });
+        guardarTipos(lista); pintarBell();
+        if(c.checked && "Notification" in window && Notification.permission==="default") Notification.requestPermission();
+        say(lista.length ? "🔔 Avisos: "+lista.length+" tipo(s) prendido(s)" : "🔕 Avisos apagados");
+      };
+    });
+    el("avCerrar").onclick=function(){ p.hidden=true; };
+  }
+  el("bell").onclick=function(){ if(!state.negocioId) return; var p=el("avisos"); if(p && !p.hidden){ p.hidden=true; } else abrirAvisos(); };
+
+  // Texto del aviso por tipo. Las ventas llegan una fila por producto: se juntan por venta.
+  function textoAviso(tipo, filas){
+    var a=filas[0], total=filas.reduce(function(s,r){ return s+Number(r.valor||0); },0);
+    if(tipo==="Venta"){
+      var prods=filas.map(function(r){ return r.producto+(Number(r.kilos)?" "+kilos(r.kilos)+" kg":""); }).join(", ");
+      return "🧾 Venta "+(a.pago==="Crédito"?"a crédito":"de contado")+" "+money(total)+" · "+a.cliente+" · "+prods;
+    }
+    if(tipo==="Abono") return "💰 "+a.cliente+" abonó "+money(total)+(a.detalle?" · "+a.detalle:"");
+    if(tipo==="Gasto") return "📤 Gasto "+money(total)+" · "+String(a.detalle||"").replace(/^📤\s*/,"")+(a.cliente?" ("+a.cliente+")":"");
+    if(tipo==="Préstamo") return "🤝 Préstamo · "+a.cliente+" · "+(a.producto||"")+(Number(a.kilos)?" "+kilos(a.kilos)+" kg":"")+(a.pago?" ("+a.pago+")":"");
+    if(tipo==="Devolución") return "↩️ Devolución "+money(total)+" · "+a.cliente+" · "+(a.producto||"")+(Number(a.kilos)?" "+kilos(a.kilos)+" kg":"");
+    if(tipo==="Pago Comisión") return "💵 Pago de comisión "+money(total)+(a.detalle?" · "+String(a.detalle).replace(/^💵\s*/,""):"");
+    return tipo+" "+money(total);
+  }
+  function revisarAvisos(){
+    var act=tiposActivos();
+    if(!state.negocioId || !act.length) return;
     var k=claveAvisos()+"_desde", desde;
     try{ desde=localStorage.getItem(k); }catch(e){}
     if(!desde){ desde=ahoraLocal(); try{ localStorage.setItem(k,desde); }catch(e){} }
-    sb.from("transacciones").select("ref,momento,cliente,valor,detalle").eq("negocio_id", state.negocioId)
-      .eq("tipo","Abono").neq("estado","Anulada").gt("momento", desde.slice(0,19)).order("momento",{ascending:true}).then(function(res){
+    sb.from("transacciones").select("ref,momento,tipo,cliente,producto,kilos,valor,detalle,pago").eq("negocio_id", state.negocioId)
+      .in("tipo", act).neq("estado","Anulada").gt("momento", desde.slice(0,19)).order("momento",{ascending:true}).then(function(res){
         var nuevos=res.data||[]; if(!nuevos.length) return;
-        nuevos.forEach(function(a){
-          var txt="💰 "+a.cliente+" abonó "+money(a.valor)+(a.detalle?" · "+a.detalle:"");
-          say(txt);
-          try{ if("Notification" in window && Notification.permission==="granted") new Notification("PescaFácil · Abono", { body: txt, tag: "abono-"+a.ref }); }catch(e){}
+        // agrupar por movimiento (ref = "Tipo-Id-n" → "Tipo-Id"), así una venta de 3 productos es 1 aviso
+        var grupos={}, orden=[];
+        nuevos.forEach(function(r){ var g=String(r.ref).replace(/-\d+$/,""); if(!grupos[g]){ grupos[g]=[]; orden.push(g); } grupos[g].push(r); });
+        orden.forEach(function(g){
+          var filas=grupos[g], txt=textoAviso(filas[0].tipo, filas);
+          colaAvisos.push(txt);
+          try{ if("Notification" in window && Notification.permission==="granted") new Notification("PescaFácil · "+filas[0].tipo, { body: txt, tag: g }); }catch(e){}
         });
         try{ localStorage.setItem(k, nuevos[nuevos.length-1].momento); }catch(e){}
+        mostrarCola();
         if(state.section==="trans" && state.fecha===isoToday()) loadTrans();
       });
   }
-  setInterval(revisarAbonos, 30000);
+  // Mensajes en pantalla uno tras otro (si llegan 3 avisos juntos, se ven los 3, no solo el último).
+  var colaAvisos=[], colaCorriendo=false;
+  function mostrarCola(){
+    if(colaCorriendo || !colaAvisos.length) return;
+    colaCorriendo=true;
+    (function sig(){ if(!colaAvisos.length){ colaCorriendo=false; return; } say(colaAvisos.shift()); setTimeout(sig, 2700); })();
+  }
+  var revisarAbonos=revisarAvisos;      // nombre viejo (se llama al arrancar y al cambiar de empresa)
+  setInterval(revisarAvisos, 30000);
 
   function listaItems(titulo, lista, total){
     if(!lista.length) return "";
